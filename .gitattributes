@@ -1,0 +1,6 @@
+# Shell-Skripte immer mit LF – sonst bricht bash auf dem Server mit "$'\r': command not found" ab.
+*.sh   text eol=lf
+*.yml  text eol=lf
+*.md   text eol=lf
+# PowerShell-Skripte mit CRLF (Windows-Standard); die Dateien enthalten bewusst ein UTF-8-BOM.
+*.ps1  text eol=crlf
