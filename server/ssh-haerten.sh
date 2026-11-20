@@ -3,7 +3,8 @@
 # ssh-haerten.sh – SSH auf einem Linux-Server absichern, frisch installiert oder schon in Betrieb.
 # https://github.com/zerox80/ssh-hardening
 #
-#   sudo bash ssh-haerten.sh --user NAME [Optionen]
+#   sudo bash ssh-haerten.sh                 – fragt alles Nötige ab
+#   sudo bash ssh-haerten.sh --user NAME …   – ohne Fragen (siehe --help)
 #
 # Was passiert:
 #   * Anmeldung nur noch mit SSH-Schlüssel, kein Root-Login, keine Passwörter.
@@ -44,14 +45,18 @@ rollback_minutes=5
 dry_run=0
 action="apply"
 root_key=0
+assume_yes=0
+given_port=0 given_allow_from=0 given_open_ports=0 given_strict=0 given_no_fail2ban=0
 
 usage() {
   cat <<'EOF'
-Aufruf: sudo bash ssh-haerten.sh --user NAME [Optionen]
+Aufruf: sudo bash ssh-haerten.sh            (fragt alles Nötige ab)
+        sudo bash ssh-haerten.sh --user NAME [Optionen] [--yes]
 
-Pflicht:
   --user NAME            Benutzer, der sich danach per Schlüssel anmeldet und sudo nutzen darf.
                          Er braucht einen Schlüssel in ~/.ssh/authorized_keys (sonst Abbruch).
+                         Ohne Terminal (Automatisierung) Pflicht.
+  --yes                  Ohne Rückfrage ausführen.
 
 Optionen:
   --port N               SSH auf Port N verlegen. Der alte Port bleibt bis "--confirm" zusätzlich offen.
@@ -84,13 +89,14 @@ run()  { if (( dry_run )); then echo "    [dry-run] $*"; else "$@"; fi; }
 while (( $# )); do
   case "$1" in
     --user) admin_user="${2:-}"; shift 2 ;;
-    --port) new_port="${2:-}"; shift 2 ;;
-    --allow-from) allow_from="${2:-}"; shift 2 ;;
+    --port) new_port="${2:-}"; given_port=1; shift 2 ;;
+    --allow-from) allow_from="${2:-}"; given_allow_from=1; shift 2 ;;
     --firewall) enable_firewall=1; shift ;;
-    --open-ports) open_ports="${2:-}"; shift 2 ;;
-    --strict) strict=1; shift ;;
+    --open-ports) open_ports="${2:-}"; given_open_ports=1; shift 2 ;;
+    --strict) strict=1; given_strict=1; shift ;;
     --allow-root-key) root_key=1; shift ;;
-    --no-fail2ban) use_fail2ban=0; shift ;;
+    --no-fail2ban) use_fail2ban=0; given_no_fail2ban=1; shift ;;
+    -y|--yes) assume_yes=1; shift ;;
     --rollback-minutes) rollback_minutes="${2:-}"; shift 2 ;;
     --dry-run) dry_run=1; shift ;;
     --confirm) action="confirm"; shift ;;
@@ -125,7 +131,8 @@ ssh_service() {
 }
 
 # Effektive Einstellung laut sshd (berücksichtigt alle Dateien in der richtigen Reihenfolge).
-effective() { "$SSHD" -T 2>/dev/null | awk -v k="$1" '$1 == k { $1 = ""; sub(/^ /, ""); print }'; }
+# sshd -T schreibt Schlüsselwörter je nach Version klein ("port") oder gemischt ("Port", ab OpenSSH 10).
+effective() { "$SSHD" -T 2>/dev/null | awk -v k="$1" 'tolower($1) == k { $1 = ""; sub(/^ /, ""); print }'; }
 
 reload_ssh() {
   (( TEST_MODE )) && return 0
@@ -242,8 +249,6 @@ fi
 # ---------------------------------------------------------------- Prüfungen vor jeder Änderung
 say "ssh-haerten.sh $VERSION – Prüfungen"
 [[ -f "$STATE" ]] && fail "Eine frühere Änderung ist noch unbestätigt. Erst testen und 'sudo bash $0 --confirm' oder '--undo' ausführen."
-[[ -n "$admin_user" ]] || { usage >&2; fail "--user fehlt."; }
-getent passwd "$admin_user" >/dev/null || fail "Benutzer '$admin_user' existiert nicht."
 [[ -z "$new_port" || ( "$new_port" =~ ^[0-9]+$ && new_port -ge 1 && new_port -le 65535 ) ]] || fail "--port muss eine Zahl zwischen 1 und 65535 sein."
 [[ "$rollback_minutes" =~ ^[0-9]+$ ]] || fail "--rollback-minutes muss eine Zahl sein."
 
@@ -255,47 +260,152 @@ fi
 "$SSHD" -t || fail "Die vorhandene SSH-Konfiguration ist schon fehlerhaft (sshd -t). Bitte zuerst beheben."
 ok "Konfiguration gültig ($ssh_version)"
 
-if [[ "$admin_user" == root ]]; then
-  root_key=1
-  warn "--user root: Root bleibt per Schlüssel erreichbar (prohibit-password). Besser ist ein eigener Benutzer mit sudo."
-else
-  # sudo zeigt je nach Regel "(ALL) ALL", "(ALL : ALL) ALL" (Gruppen sudo/wheel), "(root) NOPASSWD: ALL" …
-  if ! sudo -l -U "$admin_user" 2>/dev/null | grep -Eq '\((ALL|root)( *: *ALL)?\) +([A-Z_]+: *)*ALL *$'; then
-    fail "'$admin_user' hat keine vollen sudo-Rechte. Ohne Root-Login sperrst du dich sonst aus. Z. B.: usermod -aG sudo $admin_user (Debian/Ubuntu) bzw. usermod -aG wheel $admin_user (Fedora/RHEL/openSUSE)."
-  fi
-  ok "'$admin_user' hat sudo-Rechte"
-fi
+mapfile -t current_ports < <("$SSHD" -T 2>/dev/null | awk 'tolower($1) == "port" { print $2 }' | sort -un)
+(( ${#current_ports[@]} )) || current_ports=(22)
+fw="$(firewall_kind)"
 
-# Schlüssel des Benutzers: alle Pfade aus der effektiven Konfiguration für genau diesen Benutzer.
-home_dir="$(getent passwd "$admin_user" | cut -d: -f6)"
-key_files="$("$SSHD" -T -C "user=$admin_user,host=localhost,addr=127.0.0.1" 2>/dev/null | awk '$1 == "authorizedkeysfile" { $1 = ""; print }')"
-[[ -n "$key_files" ]] || key_files=".ssh/authorized_keys"
-has_key=0
-for f in $key_files; do
-  f="${f//%h/$home_dir}"; f="${f//%u/$admin_user}"; f="${f//%%/%}"
-  [[ "$f" == /* ]] || f="$home_dir/$f"
-  if [[ -s "$f" ]] && grep -Eq '(^|[ ,"])(ssh-(ed25519|rsa|dss)|ecdsa-sha2-[a-z0-9-]+|sk-[a-z0-9@.-]+) [A-Za-z0-9+/=]+' "$f"; then
-    has_key=1
-    # StrictModes: zu offene Rechte würden den Schlüssel stillschweigend ungültig machen.
-    if [[ "$f" == "$home_dir/.ssh/"* ]]; then
-      run chmod go-w "$home_dir"
-      run chmod 700 "$home_dir/.ssh"
-      run chmod 600 "$f"
-      run chown "$admin_user": "$home_dir/.ssh" "$f"
+# Schlüsseldateien eines Benutzers laut effektiver Konfiguration (berücksichtigt Match-Blöcke)
+authorized_key_files() {
+  local u="$1" home files f out=""
+  home="$(getent passwd "$u" | cut -d: -f6 || true)"
+  files="$("$SSHD" -T -C "user=$u,host=localhost,addr=127.0.0.1" 2>/dev/null | awk 'tolower($1) == "authorizedkeysfile" { $1 = ""; print }')"
+  [[ -n "$files" ]] || files=".ssh/authorized_keys"
+  for f in $files; do
+    f="${f//%h/$home}"; f="${f//%u/$u}"; f="${f//%%/%}"
+    [[ "$f" == /* ]] || f="$home/$f"
+    out+="$f "
+  done
+  printf '%s' "${out% }"
+}
+has_key_line() { [[ -s "$1" ]] && grep -Eq '(^|[ ,"])(ssh-(ed25519|rsa|dss)|ecdsa-sha2-[a-z0-9-]+|sk-[a-z0-9@.-]+) [A-Za-z0-9+/=]+' "$1"; }
+# Gibt den Grund aus und liefert 1, wenn der Benutzer nicht geeignet ist (sonst würde man sich aussperren).
+check_user() {
+  local u="$1" f found=0
+  [[ -n "$u" ]] || { echo "Kein Benutzer angegeben."; return 1; }
+  getent passwd "$u" >/dev/null || { echo "Benutzer '$u' gibt es auf diesem Server nicht."; return 1; }
+  # sudo zeigt je nach Regel "(ALL) ALL", "(ALL : ALL) ALL" (Gruppen sudo/wheel), "(root) NOPASSWD: ALL" …
+  if [[ "$u" != root ]] && ! sudo -l -U "$u" 2>/dev/null | grep -Eq '\((ALL|root)( *: *ALL)?\) +([A-Z_]+: *)*ALL *$'; then
+    echo "'$u' hat keine vollen sudo-Rechte – ohne Root-Login sperrst du dich sonst aus. Z. B.: usermod -aG sudo $u (Debian/Ubuntu) bzw. usermod -aG wheel $u (Fedora/RHEL/openSUSE)."
+    return 1
+  fi
+  for f in $(authorized_key_files "$u"); do has_key_line "$f" && found=1; done
+  (( found )) || { echo "'$u' hat keinen SSH-Schlüssel ($(authorized_key_files "$u")). Zuerst einen eintragen (Client-Skript), sonst sperrst du dich aus."; return 1; }
+}
+
+# Rückfragen nur mit Terminal – ohne Terminal (Automatisierung, Tests) gelten nur die Optionen.
+interactive=0
+[[ -t 0 && -t 1 ]] && interactive=1
+ask() { # Frage, Vorschlag
+  local answer prompt="$1"
+  [[ -n "${2:-}" ]] && prompt+=" [$2]"
+  read -r -p "    $prompt: " answer || true
+  printf '%s' "${answer:-${2:-}}"
+}
+ask_yes() { # Frage, Vorschlag j/n
+  local a; a="$(ask "$1 (j/n)" "$2" | tr '[:upper:]' '[:lower:]')"
+  [[ "$a" =~ ^(j|ja|y|yes)$ ]]
+}
+# Liegt eine IPv4-Adresse in einem Netz (a.b.c.d/nn)? 2 = nicht prüfbar (z. B. IPv6)
+ip_in_net() {
+  local ip="$1" cidr="$2" a b c d ipn netn bits mask
+  [[ "$cidr" == */* ]] || cidr="$cidr/32"
+  bits="${cidr#*/}"
+  [[ "$ip" =~ ^[0-9]+(\.[0-9]+){3}$ && "${cidr%/*}" =~ ^[0-9]+(\.[0-9]+){3}$ && "$bits" =~ ^[0-9]+$ ]] || return 2
+  IFS=. read -r a b c d <<<"$ip"; ipn=$(( (a << 24) | (b << 16) | (c << 8) | d ))
+  IFS=. read -r a b c d <<<"${cidr%/*}"; netn=$(( (a << 24) | (b << 16) | (c << 8) | d ))
+  mask=$(( bits == 0 ? 0 : (0xFFFFFFFF << (32 - bits)) & 0xFFFFFFFF ))
+  (( (ipn & mask) == (netn & mask) ))
+}
+
+if (( interactive )); then
+  say "Ein paar Fragen – geändert wird erst nach deiner Bestätigung (Vorschlag mit Enter übernehmen)"
+  # Adresse, von der du gerade verbunden bist (auch unter sudo)
+  client_ip="$(who -m 2>/dev/null | sed -n 's/.*(\([^)]*\)).*/\1/p' | head -n 1 || true)"
+  if [[ -z "$client_ip" ]]; then client_ip="${SSH_CLIENT:-}"; client_ip="${client_ip%% *}"; fi
+  suggested_net=""
+  [[ "$client_ip" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)\.[0-9]+$ ]] && suggested_net="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}.0/24"
+
+  # 1. Benutzer (Vorschlag: wer sudo aufgerufen hat)
+  [[ -n "$admin_user" ]] || admin_user="${SUDO_USER:-}"
+  while ! reason="$(check_user "$admin_user")"; do
+    [[ -n "$admin_user" ]] && warn "$reason"
+    admin_user="$(ask "Benutzer, der sich danach per SSH-Schlüssel anmeldet" "${SUDO_USER:-}")"
+  done
+  ok "Benutzer: $admin_user"
+
+  # 2. Port
+  if (( ! given_port )); then
+    while true; do
+      answer="$(ask "SSH-Port" "${current_ports[0]}")"
+      [[ "$answer" =~ ^[0-9]+$ ]] && (( answer >= 1 && answer <= 65535 )) && break
+      warn "Bitte eine Zahl zwischen 1 und 65535."
+    done
+    [[ " ${current_ports[*]} " == *" $answer "* ]] || new_port="$answer"
+  fi
+
+  # 3. Firewall
+  if (( ! enable_firewall )) && [[ "$fw" != *-active ]]; then
+    if ask_yes "Die Firewall ist aus. Einschalten? (empfohlen bei neuen Servern; nur SSH und gewünschte Ports offen)" "n"; then
+      enable_firewall=1
+      if (( ! given_open_ports )); then
+        open_ports="$(ask "Weitere Ports freigeben, z. B. 80/tcp 443/tcp ('-' = keine)" "-")"
+        [[ "$open_ports" == "-" ]] && open_ports=""
+      fi
     fi
   fi
+
+  # 4. SSH nur aus bestimmten Netzen (wirkt über die Firewall)
+  if (( ! given_allow_from )) && { [[ "$fw" == *-active ]] || (( enable_firewall )); }; then
+    [[ -n "$client_ip" ]] && echo "    Du bist gerade verbunden von: $client_ip"
+    while true; do
+      allow_from="$(ask "SSH nur erlauben von (Netze/IPs mit Leerzeichen, '-' = von überall)" "${suggested_net:--}")"
+      [[ "$allow_from" == "-" ]] && allow_from=""
+      [[ -z "$allow_from" || -z "$client_ip" ]] && break
+      inside=0
+      for net in $allow_from; do
+        if ip_in_net "$client_ip" "$net"; then inside=1; elif [[ $? -eq 2 ]]; then inside=1; fi
+      done
+      (( inside )) && break
+      warn "$client_ip liegt NICHT in '$allow_from' – du würdest dich aussperren."
+      ask_yes "Trotzdem so übernehmen?" "n" && break
+    done
+  fi
+
+  # 5. Streng und fail2ban
+  if (( ! given_strict )) && [[ "$admin_user" != root ]]; then
+    ask_yes "Nur '$admin_user' darf sich per SSH anmelden, keine Weiterleitungen (streng)?" "n" && strict=1
+  fi
+  if (( use_fail2ban && ! given_no_fail2ban )); then
+    ask_yes "fail2ban einrichten (sperrt eine Adresse nach 5 Fehlversuchen für 1 Stunde)?" "j" || use_fail2ban=0
+  fi
+else
+  [[ -n "$admin_user" ]] || { usage >&2; fail "--user fehlt (oder das Skript in einem Terminal starten, dann fragt es nach)."; }
+  reason="$(check_user "$admin_user")" || fail "$reason"
+fi
+
+if [[ "$admin_user" == root ]]; then
+  root_key=1
+  warn "Benutzer root: Root bleibt per Schlüssel erreichbar (prohibit-password). Besser ist ein eigener Benutzer mit sudo."
+else
+  ok "'$admin_user' hat sudo-Rechte"
+fi
+# StrictModes: zu offene Rechte würden den Schlüssel stillschweigend ungültig machen.
+home_dir="$(getent passwd "$admin_user" | cut -d: -f6)"
+for f in $(authorized_key_files "$admin_user"); do
+  if has_key_line "$f" && [[ "$f" == "$home_dir/.ssh/"* ]]; then
+    run chmod go-w "$home_dir"
+    run chmod 700 "$home_dir/.ssh"
+    run chmod 600 "$f"
+    run chown "$admin_user": "$home_dir/.ssh" "$f"
+  fi
 done
-(( has_key )) || fail "'$admin_user' hat keinen SSH-Schlüssel in: $key_files. Zuerst einen Schlüssel eintragen (z. B. mit dem Client-Skript), sonst sperrst du dich aus."
 ok "'$admin_user' hat einen SSH-Schlüssel"
 
-mapfile -t current_ports < <("$SSHD" -T 2>/dev/null | awk '$1 == "port" { print $2 }' | sort -un)
-(( ${#current_ports[@]} )) || current_ports=(22)
 old_ports=""
 if [[ -n "$new_port" ]]; then
   for p in "${current_ports[@]}"; do [[ "$p" != "$new_port" ]] && old_ports+="$p "; done
   old_ports="${old_ports% }"
 fi
-fw="$(firewall_kind)"
 
 # ---------------------------------------------------------------- Neue Konfiguration
 current_methods="$(effective authenticationmethods)"
@@ -344,6 +454,10 @@ if [[ -n "$new_port" ]]; then
 fi
 echo "      Firewall: $fw${allow_from:+, SSH nur von: $allow_from}"
 if (( dry_run )); then ok "Probelauf – nichts geändert."; exit 0; fi
+if (( interactive && ! assume_yes )); then
+  echo ""
+  ask_yes "So ausführen?" "j" || { ok "Abgebrochen – nichts geändert."; exit 0; }
+fi
 
 # ---------------------------------------------------------------- Sicherung
 stamp="$(date +%Y%m%d-%H%M%S)"

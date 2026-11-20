@@ -63,7 +63,9 @@ key="$ssh_dir/$key_name"
 mkdir -p "$ssh_dir"
 chmod 700 "$ssh_dir"
 target="$user_name@$server"
-base=(-p "$port" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15)
+# -F none: ~/.ssh/config nicht mitlesen – sonst probiert ssh zusätzlich dort hinterlegte Schlüssel
+# und meldet fälschlich "schon eingetragen", obwohl dieser Schlüssel fehlt.
+base=(-F none -p "$port" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15)
 key_opts=(-i "$key" -o IdentitiesOnly=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no)
 # Wird absichtlich erst auf dem Server ausgeführt (SC2029 betrifft das hier nicht).
 probe='echo schluessel-ok; hostname -s 2>/dev/null || uname -n'

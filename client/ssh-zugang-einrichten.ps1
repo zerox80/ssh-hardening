@@ -128,7 +128,9 @@ $key = Join-Path $sshDir $KeyName
 $pub = "$key.pub"
 if (-not (Test-Path $sshDir)) { New-Item -ItemType Directory -Path $sshDir | Out-Null }
 $target = "$User@$Server"
-$baseOptions = @("-p", "$Port", "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=15")
+# -F none: ~/.ssh/config nicht mitlesen – sonst probiert ssh zusätzlich dort hinterlegte Schlüssel
+# und meldet fälschlich "schon eingetragen", obwohl dieser Schlüssel fehlt.
+$baseOptions = @("-F", "none", "-p", "$Port", "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=15")
 
 # ---------------------------------------------------------------- 1. Schlüssel
 Write-Step "Schlüssel $key"

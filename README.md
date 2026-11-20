@@ -72,8 +72,13 @@ Erst wenn die Anmeldung per Schlüssel klappt (Schritt 1), auf dem Server:
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/zerox80/ssh-hardening/main/server/ssh-haerten.sh
 less ssh-haerten.sh                       # ansehen, was ausgeführt wird
-sudo bash ssh-haerten.sh --user admin     # admin = dein Benutzer mit sudo-Rechten und SSH-Schlüssel
+sudo bash ssh-haerten.sh                  # fragt alles Nötige ab, ändert erst nach Bestätigung
 ```
+
+Das Skript fragt nach dem Benutzer (Vorschlag: der, mit dem du per sudo angemeldet bist), dem Port, ob
+die Firewall eingeschaltet werden soll, von wo SSH erlaubt ist (Vorschlag: dein Netz, mit Warnung, falls
+du dich aussperren würdest), dem strengen Modus und fail2ban – und zeigt vor jeder Änderung eine
+Zusammenfassung. Ohne Fragen, z. B. für Automatisierung: `sudo bash ssh-haerten.sh --user admin --yes`.
 
 Danach **in einem neuen Fenster** testen (das alte offen lassen) und bestätigen:
 
@@ -112,7 +117,8 @@ sudo bash ssh-haerten.sh --confirm
 
 | Option | Bedeutung |
 |---|---|
-| `--user NAME` | Pflicht: Benutzer, der sich danach per Schlüssel anmeldet und sudo nutzen darf |
+| `--user NAME` | Benutzer, der sich danach per Schlüssel anmeldet und sudo nutzen darf (ohne Terminal Pflicht) |
+| `--yes` | ohne Rückfrage ausführen |
 | `--port N` | SSH auf Port N verlegen (alter Port bleibt bis `--confirm` offen) |
 | `--allow-from "A B"` | SSH nur von diesen Adressen/Netzen, z. B. `"192.168.1.0/24 203.0.113.7"` |
 | `--firewall` | Firewall einschalten, falls aus (frischer Server) |

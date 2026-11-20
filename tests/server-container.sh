@@ -26,13 +26,13 @@ ssh-keygen -A >/dev/null
 SSHD="$(command -v sshd || echo /usr/sbin/sshd)"
 
 # Mehrfachwerte (z. B. Port) sortiert, damit die Reihenfolge in den Dateien keine Rolle spielt
-eff() { "$SSHD" -T | awk -v k="$1" '$1 == k { $1 = ""; sub(/^ /, ""); print }' | sort -n | paste -sd' ' -; }
+eff() { "$SSHD" -T | awk -v k="$1" 'tolower($1) == k { $1 = ""; sub(/^ /, ""); print }' | sort -n | paste -sd' ' -; }
 check() {
   local got; got="$(eff "$1")"
   if [[ "$got" != "$2" ]]; then echo "FEHLER: $1 = '$got', erwartet '$2'"; exit 1; fi
   echo "ok: $1 = $2"
 }
-fingerprint() { cat /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf 2>/dev/null | md5sum; }
+fingerprint() { { cat /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf 2>/dev/null || true; } | md5sum; }
 expect_fail() { # Beschreibung, Befehl…
   local what="$1"; shift
   local before; before="$(fingerprint)"
@@ -44,6 +44,12 @@ expect_fail() { # Beschreibung, Befehl…
 # Benutzer: admin (sudo + Schlüssel), ohnesudo (nur Schlüssel), ohneschluessel (nur sudo)
 ssh-keygen -q -t ed25519 -N "" -f /tmp/probe
 for u in admin ohnesudo ohneschluessel; do useradd -m "$u"; done
+# openSUSE erlaubt standardmäßig jedem sudo mit dem Root-Passwort ("ALL ALL=(ALL) ALL" + targetpw).
+# Das zählt zu Recht als sudo-Recht; für den Test "ohne sudo" wird die Regel entfernt.
+if [[ ! -f /etc/sudoers && -f /usr/etc/sudoers ]]; then cp /usr/etc/sudoers /etc/sudoers; fi
+sed -i -E '/^[[:space:]]*ALL[[:space:]]+ALL[[:space:]]*=/d; /^[[:space:]]*Defaults[[:space:]]+targetpw/d' /etc/sudoers
+mkdir -p /etc/sudoers.d
+grep -Eq '^[@#]includedir /etc/sudoers.d' /etc/sudoers || echo '@includedir /etc/sudoers.d' >> /etc/sudoers
 # admin über eine Gruppe wie bei sudo/wheel: sudo -l zeigt dann "(ALL : ALL) ALL"
 groupadd -f admins
 usermod -aG admins admin
@@ -126,6 +132,22 @@ check kbdinteractiveauthentication yes
 check passwordauthentication no
 bash "$script" --undo >/dev/null
 rm -f /etc/ssh/sshd_config.d/00-mfa.conf
+
+if command -v script >/dev/null; then
+  echo "---- Fragerunde (simuliertes Terminal)"
+  # Antworten: Benutzer, Port (Vorschlag), Firewall aus lassen, nicht streng, fail2ban ja, Abbruch
+  before="$(fingerprint)"
+  printf 'admin\n\nn\nn\nj\nn\n' | script -qec "bash $script" /dev/null > /tmp/fragen 2>&1 || true
+  tr -d '\r' </tmp/fragen | grep -q "Abgebrochen – nichts geändert" || { cat /tmp/fragen; echo "FEHLER: kein Abbruch"; exit 1; }
+  [[ "$(fingerprint)" == "$before" ]] || { echo "FEHLER: Abbruch hat etwas geändert"; exit 1; }
+  echo "ok: Fragen beantwortet, bei 'nein' nichts geändert"
+  # Dieselben Antworten, diesmal bestätigen
+  printf 'admin\n\nn\nn\nj\nj\n' | script -qec "bash $script" /dev/null > /tmp/fragen 2>&1 || true
+  check passwordauthentication no
+  bash "$script" --confirm >/dev/null
+  echo "ok: mit 'ja' ausgeführt"
+  bash "$script" --undo >/dev/null
+fi
 
 echo "---- Streng"
 bash "$script" --user admin --strict >/dev/null && bash "$script" --confirm >/dev/null

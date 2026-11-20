@@ -37,7 +37,9 @@ jobs:
         shell: pwsh
         run: |
           Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
-          $findings = Invoke-ScriptAnalyzer -Path client/ssh-zugang-einrichten.ps1, tests/windows-acl.ps1 -Severity Error
+          $findings = foreach ($f in 'client/ssh-zugang-einrichten.ps1', 'tests/windows-acl.ps1') {
+            Invoke-ScriptAnalyzer -Path $f -Severity Error
+          }
           $findings | Format-Table -AutoSize
           if ($findings) { exit 1 }
       - name: Dateirechte für OpenSSH (icacls)
