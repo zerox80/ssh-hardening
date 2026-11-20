@@ -37,7 +37,7 @@ jobs:
         shell: pwsh
         run: |
           Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
-          $findings = foreach ($f in 'client/ssh-zugang-einrichten.ps1', 'tests/windows-acl.ps1') {
+          $findings = foreach ($f in 'client/ssh-zugang-einrichten.ps1', 'tests/windows-acl.ps1', 'tests/windows-import.ps1') {
             Invoke-ScriptAnalyzer -Path $f -Severity Error
           }
           $findings | Format-Table -AutoSize
@@ -45,6 +45,12 @@ jobs:
       - name: Dateirechte für OpenSSH (icacls)
         shell: powershell
         run: .\tests\windows-acl.ps1
+      - name: Schlüssel aus der Zwischenablage (PowerShell 5.1)
+        shell: powershell
+        run: .\tests\windows-import.ps1
+      - name: Schlüssel aus der Zwischenablage (PowerShell 7)
+        shell: pwsh
+        run: .\tests\windows-import.ps1
 
   macos:
     name: macOS-Client (Bash 3.2)
@@ -61,6 +67,15 @@ jobs:
           set -e
           echo "$out"
           [ "$code" -eq 1 ] && echo "$out" | grep -q "nicht erreichbar"
+      - name: Schlüssel aus der Zwischenablage (Bash 3.2)
+        run: /bin/bash tests/client-import.sh
+
+  client-linux:
+    name: Linux-Client (Import aus der Zwischenablage)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash tests/client-import.sh
 
   server:
     name: Server ${{ matrix.image }}

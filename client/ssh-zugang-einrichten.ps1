@@ -3,6 +3,9 @@
   Richtet den SSH-Zugang von diesem Windows-PC zu einem Linux-Server ein – in einem Rutsch.
 
 .DESCRIPTION
+  0. Neuer PC: übernimmt auf Wunsch den privaten Schlüssel aus der Zwischenablage (z. B. aus Bitwarden),
+     setzt die Dateirechte und leert die Zwischenablage. Ist der Schlüssel auf dem Server schon
+     eingetragen, ist danach kein Passwort nötig – auch nicht bei gehärteten Servern.
   1. Nutzt einen vorhandenen SSH-Schlüssel oder erzeugt einen neuen (ed25519).
   2. Trägt den öffentlichen Schlüssel auf dem Server ein – nur wenn nötig, dafür EINMAL das Server-Passwort.
   3. Prüft, ob die Anmeldung jetzt ohne Passwort klappt.
@@ -16,6 +19,9 @@
   powershell -ExecutionPolicy Bypass -File .\ssh-zugang-einrichten.ps1 -Server 192.0.2.10 -User admin
 .EXAMPLE
   .\ssh-zugang-einrichten.ps1 -Server server.example.org -User admin -Port 2222 -Alias web1 -Bitwarden
+.EXAMPLE
+  # Neuer PC: in Bitwarden den privaten Schlüssel kopieren, dann
+  .\ssh-zugang-einrichten.ps1 -Server server.example.org -User admin -Import
 #>
 [CmdletBinding()]
 param(
@@ -25,6 +31,9 @@ param(
     # Zusätzliche Kurznamen; der echte Hostname des Servers und die Adresse kommen automatisch dazu.
     [string[]] $Alias = @(),
     [string] $KeyName = "id_ed25519",
+    # Privaten Schlüssel aus der Zwischenablage übernehmen (z. B. aus Bitwarden). Ohne den Schalter
+    # fragt das Skript nach, wenn noch kein Schlüssel da ist und die Zwischenablage einen enthält.
+    [switch] $Import,
     # Privaten Schlüssel ohne Rückfrage für Bitwarden in die Zwischenablage legen.
     [switch] $Bitwarden,
     # Nicht nach Bitwarden fragen.
@@ -113,6 +122,35 @@ function Clear-SecretClipboard {
     }
 }
 
+# Privaten Schlüssel aus beliebigem Text herauslösen und so aufbereiten, wie ssh ihn erwartet:
+# nur LF, Base64 neu umbrochen (Bitwarden & Co. liefern ihn manchmal in einer Zeile oder mit CRLF).
+# Gibt $null zurück, wenn kein privater Schlüssel im Text steckt.
+function ConvertTo-PrivateKeyText([string] $text) {
+    if (-not $text) { return $null }
+    $t = ($text -replace "`r`n", "`n") -replace "`r", "`n"
+    $m = [regex]::Match($t, '(?s)-----BEGIN ((?:OPENSSH |RSA |EC |DSA )?PRIVATE KEY)-----(.*?)-----END \1-----')
+    if (-not $m.Success) { return $null }
+    $label = $m.Groups[1].Value
+    $body = $m.Groups[2].Value
+    $lines = New-Object System.Collections.Generic.List[string]
+    if ($body -match ':') {
+        # Ältere PEM-Schlüssel mit Kopfzeilen (z. B. verschlüsselt): nur Zeilen säubern
+        foreach ($line in ($body -split "`n")) { if ($line.Trim()) { $lines.Add($line.Trim()) } }
+    } else {
+        $b64 = $body -replace '\s', ''
+        if (-not $b64) { return $null }
+        $width = if ($label -eq 'OPENSSH PRIVATE KEY') { 70 } else { 64 }
+        for ($i = 0; $i -lt $b64.Length; $i += $width) { $lines.Add($b64.Substring($i, [Math]::Min($width, $b64.Length - $i))) }
+    }
+    return "-----BEGIN $label-----`n" + ($lines -join "`n") + "`n-----END $label-----`n"
+}
+function Get-ClipboardPrivateKey {
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try { $text = Get-Clipboard -Raw 2>$null } catch { $text = $null } finally { $ErrorActionPreference = $previous }
+    return ConvertTo-PrivateKeyText "$text"
+}
+
 # ---------------------------------------------------------------- OpenSSH vorhanden?
 Write-Step "OpenSSH-Client prüfen"
 foreach ($tool in "ssh", "ssh-keygen") {
@@ -131,6 +169,53 @@ $target = "$User@$Server"
 # -F none: ~/.ssh/config nicht mitlesen – sonst probiert ssh zusätzlich dort hinterlegte Schlüssel
 # und meldet fälschlich "schon eingetragen", obwohl dieser Schlüssel fehlt.
 $baseOptions = @("-F", "none", "-p", "$Port", "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=15")
+
+# ---------------------------------------------------------------- 0. Schlüssel aus der Zwischenablage
+$importText = $null
+if ($Import) {
+    $importText = Get-ClipboardPrivateKey
+    if (-not $importText) {
+        Stop-WithError "In der Zwischenablage liegt kein privater SSH-Schlüssel. In Bitwarden beim SSH-Schlüssel den privaten Schlüssel kopieren und erneut starten."
+    }
+} elseif (-not (Test-Path $key) -and (Test-Interactive)) {
+    $candidate = Get-ClipboardPrivateKey
+    if ($candidate) {
+        Write-Host ""
+        $answer = Read-Host "In der Zwischenablage liegt ein privater SSH-Schlüssel (z. B. aus Bitwarden). Übernehmen? (J/n)"
+        if ($answer -notmatch '^(n|nein|no)$') { $importText = $candidate }
+    }
+}
+if ($importText) {
+    Write-Step "Schlüssel aus der Zwischenablage übernehmen"
+    $sameAs = { param($path) (Test-Path $path) -and (((Get-Content $path -Raw) -replace "`r", "").Trim() -eq $importText.Trim()) }
+    if ((Test-Path $key) -and -not (& $sameAs $key)) {
+        # Unter dem Namen liegt schon ein anderer Schlüssel: nie überschreiben. Ohne -KeyName einen
+        # eigenen Namen für diesen Server nehmen, z. B. id_ed25519_aufgaben.
+        if ($PSBoundParameters.ContainsKey("KeyName")) { Stop-WithError "$key enthält schon einen anderen Schlüssel. Einen anderen -KeyName wählen." }
+        $suffix = if ($Alias.Count -gt 0) { $Alias[0] } else { $Server }
+        $key = Join-Path $sshDir ("id_ed25519_" + ($suffix -replace '[^A-Za-z0-9_-]', '_'))
+        $pub = "$key.pub"
+        if ((Test-Path $key) -and -not (& $sameAs $key)) { Stop-WithError "$key enthält schon einen anderen Schlüssel. Mit -KeyName einen freien Namen wählen." }
+    }
+    $created = $false
+    if (-not (Test-Path $key)) {
+        [System.IO.File]::WriteAllText($key, $importText, (New-Object System.Text.UTF8Encoding $false))
+        $created = $true
+    }
+    Set-OwnerOnlyAcl $key
+    # Öffentlichen Teil aus dem privaten Schlüssel ableiten – prüft zugleich, ob der Text gültig ist.
+    $previous = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+    $publicLine = & ssh-keygen -y -f $key
+    $code = $LASTEXITCODE
+    $ErrorActionPreference = $previous
+    if ($code -ne 0 -or -not $publicLine) {
+        if ($created) { Remove-Item $key -Force }
+        Stop-WithError "Der Text in der Zwischenablage ist kein gültiger privater Schlüssel (oder die Passphrase war falsch). Nichts gespeichert."
+    }
+    [System.IO.File]::WriteAllText($pub, "$(@($publicLine)[0])`n", (New-Object System.Text.UTF8Encoding $false))
+    Clear-SecretClipboard
+    Write-Host "Gespeichert als $key – Zwischenablage geleert." -ForegroundColor Green
+}
 
 # ---------------------------------------------------------------- 1. Schlüssel
 Write-Step "Schlüssel $key"
@@ -239,7 +324,8 @@ if (-not $NoConfig) {
 
 # ---------------------------------------------------------------- 6. Bitwarden (optional)
 $wantBitwarden = $Bitwarden
-if (-not $Bitwarden -and -not $NoBitwarden -and (Test-Interactive)) {
+# Gerade aus Bitwarden übernommen: nicht noch einmal anbieten
+if (-not $Bitwarden -and -not $NoBitwarden -and -not $importText -and (Test-Interactive)) {
     Write-Host ""
     $answer = Read-Host "Privaten Schlüssel für Bitwarden in die Zwischenablage legen? (j/N)"
     $wantBitwarden = $answer -match '^(j|ja|y|yes)$'

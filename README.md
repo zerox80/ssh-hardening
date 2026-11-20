@@ -51,6 +51,7 @@ bash /tmp/ssh-zugang-einrichten.sh -s SERVER -u BENUTZER
 | `-Port` | `-p` | SSH-Port, Standard 22 |
 | `-Alias` | `-a` | weitere Kurznamen (Hostname und Adresse kommen automatisch dazu) |
 | `-KeyName` | `-k` | Name der Schlüsseldatei in `~/.ssh`, Standard `id_ed25519` |
+| `-Import` | `-i` | privaten Schlüssel aus der Zwischenablage übernehmen (z. B. aus Bitwarden) |
 | `-Bitwarden` | `-b` | privaten Schlüssel ohne Rückfrage für Bitwarden in die Zwischenablage |
 | `-NoBitwarden` | `-B` | nicht nach Bitwarden fragen |
 | `-NoConfig` | `-n` | `~/.ssh/config` nicht anfassen |
@@ -72,6 +73,29 @@ Zwischenablage:
 Unter Windows landet der Schlüssel dabei nicht im Zwischenablage-Verlauf (Win+V) und wird nicht
 synchronisiert. Unter Linux wird `wl-copy` (Wayland, Fedora-Standard), `xclip`/`xsel` oder unter macOS
 `pbcopy` verwendet.
+
+### Neuer PC: Schlüssel aus Bitwarden übernehmen
+
+Nach der Härtung nimmt der Server keine Passwörter mehr an – ein neuer PC kommt nur mit dem
+vorhandenen Schlüssel hinein. So geht es ohne Handarbeit:
+
+1. In Bitwarden beim SSH-Schlüssel den **privaten Schlüssel kopieren**.
+2. Das Skript wie oben starten. Liegt noch kein Schlüssel auf dem PC, erkennt es den Schlüssel in der
+   Zwischenablage und fragt „Übernehmen? (J/n)“ – oder gleich mit `-Import` (Windows) bzw. `-i`.
+3. Es speichert den Schlüssel mit den richtigen Rechten, leert die Zwischenablage, prüft die Anmeldung
+   (kein Passwort nötig, der Schlüssel ist ja schon auf dem Server) und legt die Kurznamen an.
+   Danach genügt `ssh <hostname>`.
+
+```powershell
+$f = "$env:TEMP\ssh-zugang-einrichten.ps1"
+irm https://raw.githubusercontent.com/zerox80/ssh-hardening/main/client/ssh-zugang-einrichten.ps1 -OutFile $f
+powershell -ExecutionPolicy Bypass -File $f -Server SERVER -User BENUTZER -Import
+```
+
+Liegt unter dem Standardnamen `id_ed25519` schon ein anderer Schlüssel, wird er nie überschrieben;
+der übernommene bekommt dann einen eigenen Namen wie `id_ed25519_SERVER`. Bitwarden liefert den
+Schlüssel manchmal in einer Zeile oder mit Windows-Zeilenenden – das Skript bringt ihn in die Form,
+die ssh erwartet, und prüft ihn, bevor es etwas speichert.
 
 ## 2. Server absichern
 
