@@ -44,6 +44,11 @@ while getopts "s:u:p:a:k:bBnh" opt; do
     *) usage ;;
   esac
 done
+# Fehlt Server oder Benutzer, im Terminal nachfragen (wie das Windows-Skript)
+if [[ -t 0 && -t 1 ]]; then
+  [[ -n "$server" ]] || read -r -p "Server (Adresse oder Name): " server
+  [[ -n "$user_name" ]] || read -r -p "Benutzer auf dem Server: " user_name
+fi
 [[ -n "$server" && -n "$user_name" ]] || usage
 [[ "$port" =~ ^[0-9]+$ ]] || usage
 

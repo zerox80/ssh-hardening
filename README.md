@@ -22,18 +22,26 @@ Das Client-Skript
 Es lässt sich gefahrlos wiederholen: kein doppelter Eintrag, und ist der Schlüssel schon da, wird
 nicht nach dem Passwort gefragt.
 
-**Windows** (PowerShell):
+`SERVER` steht für die Adresse oder den Namen des Servers, `BENUTZER` für dein Konto auf dem
+Server. Lässt du beides weg, fragt das Skript danach.
+
+**Windows** – in einer normalen PowerShell, nicht „Als Administrator“ (der Schlüssel gehört in
+dein eigenes Profil):
 
 ```powershell
-irm https://raw.githubusercontent.com/zerox80/ssh-hardening/main/client/ssh-zugang-einrichten.ps1 -OutFile ssh-zugang-einrichten.ps1
-powershell -ExecutionPolicy Bypass -File .\ssh-zugang-einrichten.ps1 -Server 192.0.2.10 -User admin
+$f = "$env:TEMP\ssh-zugang-einrichten.ps1"
+irm https://raw.githubusercontent.com/zerox80/ssh-hardening/main/client/ssh-zugang-einrichten.ps1 -OutFile $f
+powershell -ExecutionPolicy Bypass -File $f -Server SERVER -User BENUTZER
 ```
+
+Die Datei landet im Temp-Ordner, damit der Download überall klappt – eine Administrator-PowerShell
+startet zum Beispiel in `C:\Windows\System32`, und dort darf niemand Dateien ablegen.
 
 **Linux / macOS**:
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/zerox80/ssh-hardening/main/client/ssh-zugang-einrichten.sh
-bash ssh-zugang-einrichten.sh -s 192.0.2.10 -u admin
+curl -fsSL https://raw.githubusercontent.com/zerox80/ssh-hardening/main/client/ssh-zugang-einrichten.sh -o /tmp/ssh-zugang-einrichten.sh
+bash /tmp/ssh-zugang-einrichten.sh -s SERVER -u BENUTZER
 ```
 
 | Windows | Linux/macOS | Bedeutung |
