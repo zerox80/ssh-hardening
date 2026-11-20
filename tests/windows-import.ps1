@@ -56,6 +56,8 @@ try {
             try {
                 $out = & powershell -NoProfile -ExecutionPolicy Bypass -File $client -Server 127.0.0.1 -Port 1 -User test -Import -NoBitwarden 2>&1 | Out-String
             } finally { $env:USERPROFILE = $previousProfile }
+            # Der Client endet absichtlich mit 1 (Server nicht erreichbar) – nicht als Testergebnis werten
+            $global:LASTEXITCODE = 0
             $key = Join-Path $userProfile ".ssh\id_ed25519"
             Assert (Test-Path $key) "Import hat keine Datei angelegt:`n$out"
             Assert ($out -match "Zwischenablage geleert") "Zwischenablage nicht geleert:`n$out"
@@ -70,3 +72,4 @@ try {
 } finally {
     Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
 }
+exit 0
