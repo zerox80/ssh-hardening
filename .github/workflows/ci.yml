@@ -14,14 +14,14 @@ jobs:
     name: ShellCheck
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: shellcheck -x server/ssh-haerten.sh client/ssh-zugang-einrichten.sh tests/*.sh
 
   windows:
     name: Windows-Client (PowerShell 5.1 und 7)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Parsen in beiden PowerShell-Versionen
         shell: pwsh
         run: |
@@ -56,7 +56,7 @@ jobs:
     name: macOS-Client (Bash 3.2)
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Läuft mit der mitgelieferten Bash 3.2
         run: |
           /bin/bash --version | head -n 1
@@ -74,7 +74,7 @@ jobs:
     name: Linux-Client (Import aus der Zwischenablage)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: bash tests/client-import.sh
 
   server:
@@ -94,12 +94,12 @@ jobs:
           - opensuse/leap:15.6
           - opensuse/tumbleweed
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: docker run --rm -v "$PWD:/src:ro" "${{ matrix.image }}" bash /src/tests/server-container.sh
 
   e2e:
     name: Ende-zu-Ende (Ubuntu mit systemd)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: bash tests/e2e-ubuntu.sh
